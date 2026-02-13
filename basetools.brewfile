@@ -1,0 +1,24 @@
+tap "ublue-os/tap"
+
+# Base
+brew "gum"
+brew "fzf"
+brew "jq"
+
+# Tools
+brew "git-svn"
+brew "numactl"
+brew "p7zip"
+brew "util-linux"
+brew "ddcutil"
+
+# Shell
+brew "zsh"
+brew "tmux"
+
+# Remotes
+brew "cryfs"
+brew "rclone"
+brew "borgbackup"
+
+flatpak "io.github.kolunmi.Bazaar"

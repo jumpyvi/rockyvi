@@ -1,6 +1,6 @@
 FROM scratch as ctx
 COPY build /build
-COPY --from=ghcr.io/projectbluefin/common:latest /system_files/shared /files
+COPY --from=ghcr.io/projectbluefin/common:latest /system_files /files
 COPY --from=ghcr.io/ublue-os/brew:latest /system_files /files
 
 FROM quay.io/rockylinux/rockylinux:10-ubi-init  as repos
@@ -31,6 +31,7 @@ RUN /usr/libexec/bootc-base-imagectl build-rootfs --reinject --manifest=r10 /tar
 RUN ls
 
 RUN --mount=type=bind,from=ctx,source=/,target=/target-rootfs/ctx \
+    --mount=type=bind,from=ctx,source=/files,target=/target-rootfs/files \
     --mount=type=cache,dst=/var/cache \
     --mount=type=cache,dst=/var/log \
     --mount=type=tmpfs,dst=/tmp \
@@ -47,3 +48,4 @@ LABEL org.opencontainers.image.description Rocky Linux Bootable Container Image
 RUN bootc container lint
 STOPSIGNAL SIGRTMIN+3
 CMD ["/sbin/init"]
+

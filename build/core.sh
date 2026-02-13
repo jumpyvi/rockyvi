@@ -2,12 +2,6 @@
 
 set -ouex pipefail
 
-cp -avf "/tmp/ctx/files"/. /
-
-systemctl enable brew-setup.service
-
-dnf update -y
-
 dnf install -y \
     vim \
     tree \
@@ -21,3 +15,5 @@ dnf install -y \
     wireguard-tools
 
 dnf -y --setopt=install_weak_deps=False install gcc
+
+flatpak remote-add --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo
