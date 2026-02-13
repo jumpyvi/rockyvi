@@ -1,14 +1,14 @@
-releasever: 9
+releasever: 10
 
 repos:
   - baseos
   - appstream
 
 variables:
-  distro: "almalinux9"
+  distro: "rocky10"
 
 packages:
-  - almalinux-repos
+  - rocky-repos
 
 postprocess:
   - |

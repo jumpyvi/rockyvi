@@ -1,0 +1,25 @@
+# Default Flatpaks
+
+[Flatpak Preinstall io.github.kolunmi.Bazaar]
+Branch=stable
+
+[Flatpak Preinstall io.github.flattool.Warehouse]
+Branch=stable
+
+[Flatpak Preinstall com.github.tchx84.Flatseal]
+Branch=stable
+
+[Flatpak Preinstall org.videolan.VLC]
+Branch=stable
+
+[Flatpak Preinstall org.gnome.FileRoller]
+Branch=stable
+
+[Flatpak Preinstall io.missioncenter.MissionCenter]
+Branch=stable
+
+[Flatpak Preinstall com.mattjakeman.ExtensionManager]
+Branch=stable
+
+[Flatpak Preinstall org.gnome.Loupe]
+Branch=stable

@@ -1,303 +1,218 @@
-name: Build amd64 and arm64
+---
+name: Build container image
 on:
-  workflow_dispatch:
-    inputs:
-      RELEASE:
-        description: 'AlmaLinux release'
-        required: true
-        default: '9'
-        type: choice
-        options:
-          - '10-kitten'
-          - '10'
-          - '9'
-          - 'ALL'
-
+  pull_request:
+    branches:
+      - main
   schedule:
-    # run every day at 03:00 UTC
-    - cron:  '00 03 * * *'
-
-# REQUIRED: Set up permissions for OIDC token and KMS access
-permissions:
-  id-token: write
-  contents: read
-  packages: write
+    - cron: '05 10 * * *'  # 10:05am UTC everyday
+  push:
+    branches:
+      - main
+    paths-ignore:
+      - '**/README.md'
+  workflow_dispatch:
 
 env:
-  LATEST_MAJOR: 9
-  IMAGE_NAME: almalinux-bootc
-  VERSIONS_LIST: '"9", "10-kitten", "10"'
-  AWS_REGION: us-east-1
-  AWS_ROLE_ARN: arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/bootcimages
-  KMS_KEY_ALIAS: cloudsig
-  CHAT_CHANNEL: ${{ vars.MATTERMOST_CHANNEL }}
+  IMAGE_DESC: "My Customized Universal Blue Image"
+  IMAGE_KEYWORDS: "bootc,ublue,universal-blue"
+  IMAGE_LOGO_URL: "https://avatars.githubusercontent.com/u/120078124?s=200&v=4"  # Put your own image here for a fancy profile on https://artifacthub.io/!
+  IMAGE_NAME: "${{ github.event.repository.name }}"  # output image name, usually same as repo name
+  IMAGE_REGISTRY: "ghcr.io/${{ github.repository_owner }}"  # do not edit
+  DEFAULT_TAG: "stable"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref || github.run_id }}-${{ inputs.brand_name}}-${{ inputs.stream_name }}
+  cancel-in-progress: true
 
 jobs:
-  set-versions-matrix:
-    name: Set versions matrix
+  build_push:
+    name: Build and push image
     runs-on: ubuntu-24.04
-    outputs:
-      matrix: ${{ steps.set-matrix.outputs.matrix }}
-      date_stamp: ${{ steps.date-stamp.outputs.date_stamp }}
+
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+
     steps:
-      - name: Set matrix
-        id: set-matrix
+      - name: Prepare environment
         run: |
-          # Format json for versions matrix
-          case ${{ github.event_name }} in
-            workflow_dispatch)
-              if [[ "${{ inputs.RELEASE }}" == "ALL" ]]; then
-                echo "matrix=$(jq -c <<< '[${{ env.VERSIONS_LIST }}]')" >> $GITHUB_OUTPUT
-              else
-                echo "matrix=$(jq -c <<< '["${{ inputs.RELEASE }}"]')" >> $GITHUB_OUTPUT
-              fi
-              ;;
-            schedule)
-              echo "matrix=$(jq -c <<< '[${{ env.VERSIONS_LIST }}]')" >> $GITHUB_OUTPUT
-              ;;
-          esac
+          # Lowercase the image uri
+          echo "IMAGE_REGISTRY=${IMAGE_REGISTRY,,}" >> ${GITHUB_ENV}
+          echo "IMAGE_NAME=${IMAGE_NAME,,}" >> ${GITHUB_ENV}
 
-      - name: Date stamp
-        id: date-stamp
-        run: |
-          # date stamp
-          date_stamp=$(date -u '+%Y%m%d')
-          [ "x${date_stamp}" != "x" ] && echo "date_stamp=${date_stamp}" >> "$GITHUB_OUTPUT"
-
-  build:
-    name: Build image
-    runs-on: ${{ matrix.ARCH == 'arm64' && 'ubuntu-24.04-arm' || 'ubuntu-24.04' }}
-    needs: [set-versions-matrix]
-    strategy:
-      fail-fast: false
-      matrix:
-        VERSION_MAJOR: ${{ fromJSON(needs.set-versions-matrix.outputs.matrix) }}
-        ARCH: [amd64, arm64, amd64/v2]
-        exclude:
-          - VERSION_MAJOR: 9
-            ARCH: amd64/v2
-
-    env:
-      PLATFORM: linux/${{ matrix.ARCH }}
-      DATE_STAMP: ${{ needs.set-versions-matrix.outputs.date_stamp }}
-
-    steps:
-    - uses: actions/checkout@v4
-      with:
-        submodules: true
-
-    - uses: ./.github/actions/shared-steps
-      name: Build and Push
-      with:
-        VERSION_MAJOR: ${{ matrix.VERSION_MAJOR }}
-        DATE_STAMP: ${{ env.DATE_STAMP }}
-        IMAGE_REGISTRY: ${{ secrets.IMAGE_REGISTRY }}
-        REGISTRY_USER:  ${{ secrets.REGISTRY_USER }}
-        REGISTRY_PASSWORD: ${{ secrets.REGISTRY_PASSWORD }}
-        KMS_KEY_ALIAS: ${{ env.KMS_KEY_ALIAS }}
-        AWS_ROLE_ARN: ${{ env.AWS_ROLE_ARN }}
-        AWS_REGION: ${{ env.AWS_REGION }}
-
-  push-manifest:
-    if: ${{ always() && contains(join(needs.*.result, ','), 'success') }}
-    name: Push manifest
-    needs: [set-versions-matrix, build]
-    runs-on: ubuntu-24.04
-    strategy:
-      fail-fast: false
-      matrix:
-        VERSION_MAJOR: ${{ fromJSON(needs.set-versions-matrix.outputs.matrix) }}
-    env:
-      DATE_STAMP: ${{ needs.set-versions-matrix.outputs.date_stamp }}
-
-    steps:
+      # These stage versions are pinned by https://github.com/renovatebot/renovate
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5
 
-      - name: Fetch Build Outputs
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+      # This is optional, but if you see that your builds are way too big for the runners, you can enable this by uncommenting the following lines:
+      # - name: Maximize build space
+      #   uses: ublue-os/remove-unwanted-software@517622d6452028f266b7ba4cc9a123b5f58a6b53 # v7
+      #   with:
+      #     remove-codeql: true
+
+      - name: Mount BTRFS for podman storage
+        id: container-storage-action
+        uses: ublue-os/container-storage-action@911baca08baf30c8654933e9e9723cb399892140 # main
+
+        # Fallback to the remove-unwanted-software-action if github doesn't allocate enough space
+        # See: https://github.com/ublue-os/container-storage-action/pull/11
+        continue-on-error: true 
         with:
-          pattern: ${{ env.IMAGE_NAME }}_${{ matrix.VERSION_MAJOR }}_*
-          merge-multiple: true
-          path: /tmp/artifacts
+          target-dir: /var/lib/containers
+          mount-opts: compress-force=zstd:2
 
-      - name: Load Outputs
-        id: load-outputs
+      - name: Get current date
+        id: date
         run: |
-          if [[ ! -d /tmp/artifacts ]]; then
-            echo "No artifacts found, skipping manifest creation"
-            echo "skip=1" >> "$GITHUB_ENV"
-            exit
-          fi
-
-          ls -lR /tmp/artifacts/
-          jq -sc add /tmp/artifacts/*.json > merged.json
-          echo "DIGESTS_JSON=$(cat merged.json)" >> $GITHUB_OUTPUT
-          jq '.' merged.json
-
-      - name: Sanity check
-        if: ${{ env.skip != 1 }}
-        id: check
-        env:
-          DIGESTS_JSON: ${{ steps.load-outputs.outputs.DIGESTS_JSON }}
-        run: |
-          [[ "${{ matrix.VERSION_MAJOR }}" == "9" ]] && EXPECTED=2 || EXPECTED=3
-
-          # Ensure we have the correct number of digests
-          if [[ $(echo ${DIGESTS_JSON} | jq 'length') -ne $EXPECTED ]]; then
-            echo "Expected $EXPECTED digests, found $(echo ${DIGESTS_JSON} | jq 'length')"
-            exit 1
-          fi
-
-          # Ensure all versions match
-          COUNT=$(echo ${DIGESTS_JSON} | jq '[.[] | .version] | unique | length')
-          if [[ $COUNT -ne 1 ]]; then
-            echo "Versions do not match across all platforms"
-            echo ${DIGESTS_JSON} | jq '[.[] | .version]'
-            exit 1
-          fi
-
-          echo "id=$(echo ${DIGESTS_JSON} | jq -r '[.[] | .id] | unique | .[0]')" >> $GITHUB_OUTPUT
-          echo "version-id=$(echo ${DIGESTS_JSON} | jq -r '[.[] | .version] | unique | .[0]')" >> $GITHUB_OUTPUT
-          echo "long-version=$(echo ${DIGESTS_JSON} | jq -r '[.[] | .long_version] | unique | .[0]')" >> $GITHUB_OUTPUT
-          echo "vendor=$(echo ${DIGESTS_JSON} | jq -r '[.[] | .vendor] | unique | .[0]')" >> $GITHUB_OUTPUT
+          # This generates a timestamp like what is defined on the ArtifactHub documentation
+          # E.G: 2022-02-08T15:38:15Z'
+          # https://artifacthub.io/docs/topics/repositories/container-images/
+          # https://linux.die.net/man/1/date
           echo "date=$(date -u +%Y\-%m\-%d\T%H\:%M\:%S\Z)" >> $GITHUB_OUTPUT
 
-      - name: Login to registry (docker)
-        if: ${{ env.skip != 1 }}
-        uses: docker/login-action@v3
-        with:
-          registry: ${{ secrets.IMAGE_REGISTRY }}
-          username: ${{ secrets.REGISTRY_USER }}
-          password: ${{ secrets.REGISTRY_PASSWORD }}
-
+      # Image metadata for https://artifacthub.io/ - This is optional but is highly recommended so we all can get a index of all the custom images
+      # The metadata by itself is not going to do anything, you choose if you want your image to be on ArtifactHub or not.
       - name: Image Metadata
-        if: ${{ env.skip != 1 }}
-        uses: docker/metadata-action@902fa8ec7d6ecbf8d84d538b9b233a880e428804 # v5
+        uses: docker/metadata-action@c1e51972afc2121e065aed6d45c65596fe445f3f # v5
         id: metadata
         with:
+          # This generates all the tags for your image, you can add custom tags here too!
+          # Default tags are "$DEFAULT_TAG" and "$DEFAULT_TAG.$date".
           tags: |
-            type=raw,value=latest,enable=${{ matrix.VERSION_MAJOR == env.LATEST_MAJOR }}
-            type=raw,value=${{ matrix.VERSION_MAJOR }}
-            type=raw,value=${{ steps.check.outputs.version-id }},enable=${{ matrix.VERSION_MAJOR != '10-kitten' }}
-            type=raw,value=${{ steps.check.outputs.version-id }}-${{ env.DATE_STAMP }}
-            type=raw,value=${{ steps.check.outputs.long-version }}
+            type=raw,value=${{ env.DEFAULT_TAG }}
+            type=raw,value=${{ env.DEFAULT_TAG }}.{{date 'YYYYMMDD'}}
+            type=raw,value={{date 'YYYYMMDD'}}
+            type=sha,enable=${{ github.event_name == 'pull_request' }}
+            type=ref,event=pr
           labels: |
-            redhat.id=${{ steps.check.outputs.id }}
-            redhat.version-id=${{ steps.check.outputs.version-id }}
-            version=${{ steps.check.outputs.version-id }}
-            release=${{ steps.check.outputs.version-id }}
-            org.opencontainers.image.created=${{ steps.check.outputs.date }}
-            org.opencontainers.image.source=${{ github.repositoryUrl }}
+            io.artifacthub.package.readme-url=https://raw.githubusercontent.com/${{ github.repository_owner }}/${{ env.IMAGE_NAME }}/${{ github.sha }}/README.md
+            org.opencontainers.image.created=${{ steps.date.outputs.date }}
+            org.opencontainers.image.description=${{ env.IMAGE_DESC }}
+            org.opencontainers.image.documentation=https://raw.githubusercontent.com/${{ github.repository_owner }}/${{ env.IMAGE_NAME }}/${{ github.sha }}/README.md
+            org.opencontainers.image.source=https://github.com/${{ github.repository_owner }}/${{ env.IMAGE_NAME }}/blob/${{ github.sha }}/Containerfile
             org.opencontainers.image.title=${{ env.IMAGE_NAME }}
-            org.opencontainers.image.url=${{ github.event.repository.html_url }}
-            org.opencontainers.image.version=${{ steps.check.outputs.long-version }}
-            org.opencontainers.image.vendor=AlmaLinux OS Foundation
-            org.opencontainers.image.description=AlmaLinux Bootable Container Image
+            org.opencontainers.image.url=https://github.com/${{ github.repository_owner }}/${{ env.IMAGE_NAME }}/tree/${{ github.sha }}
+            org.opencontainers.image.vendor=${{ github.repository_owner }}
+            org.opencontainers.image.version=${{ env.DEFAULT_TAG }}.{{date 'YYYYMMDD'}}
+            io.artifacthub.package.deprecated=false
+            io.artifacthub.package.keywords=${{ env.IMAGE_KEYWORDS }}
+            io.artifacthub.package.license=Apache-2.0
+            io.artifacthub.package.logo-url=${{ env.IMAGE_LOGO_URL }}
+            io.artifacthub.package.prerelease=false
+            containers.bootc=1
+          sep-tags: " "
+          sep-annotations: " "
 
-      - name: Get a newer podman (from debian trixie)
-        if: ${{ env.skip != 1 }}
+      - name: Build Image
+        id: build_image
+        uses: redhat-actions/buildah-build@7a95fa7ee0f02d552a32753e7414641a04307056 # v2
+        with:
+          containerfiles: |
+            ./Containerfile
+          # Postfix image name with -custom to make it a little more descriptive
+          # Syntax: https://docs.github.com/en/actions/learn-github-actions/expressions#format
+          image: ${{ env.IMAGE_NAME }}
+          tags: ${{ env.DEFAULT_TAG }}
+          labels: ${{ steps.metadata.outputs.labels }}
+          oci: false
+
+      # Tag for registry
+      - name: Tag for registry
         run: |
-          set -eux
-          echo 'deb [trusted=yes] https://ftp.debian.org/debian/ trixie main' | sudo tee /etc/apt/sources.list.d/trixie.list
-          sudo apt update
-          sudo apt install -y crun/trixie podman/trixie
-
-      - name: Create Manifest
-        if: ${{ env.skip != 1 }}
-        id: create-manifest
-        run: |
-          IMAGE_DEST=${{ secrets.IMAGE_REGISTRY }}/${{ env.IMAGE_NAME }}
-          podman manifest create ${IMAGE_DEST}
-          echo "MANIFEST=${IMAGE_DEST}" >> $GITHUB_OUTPUT
-
-      - name: Populate Manifest
-        if: ${{ env.skip != 1 }}
-        env:
-          MANIFEST: ${{ steps.create-manifest.outputs.MANIFEST }}
-          DIGESTS_JSON: ${{ steps.load-outputs.outputs.DIGESTS_JSON }}
-          LABELS: ${{ steps.metadata.outputs.labels }}
-        run: |
-          IMAGE_DEST=${{ secrets.IMAGE_REGISTRY }}/${{ env.IMAGE_NAME }}
-
-          for platform in $(echo $DIGESTS_JSON | jq -r '. | to_entries | .[].key'); do
-            digest=$(echo $DIGESTS_JSON | jq -r ".[\"$platform\"].digest")
-            echo "Adding ${IMAGE_DEST}@$digest for $platform"
-            if [[ "$platform" = */v* ]]; then
-              podman manifest add $MANIFEST ${IMAGE_DEST}@$digest --arch ${platform%/*} --variant ${platform#*/}
-            else
-              podman manifest add $MANIFEST ${IMAGE_DEST}@$digest --arch $platform
-            fi
+          for tag in ${{ steps.metadata.outputs.tags }}; do
+            podman tag ${{ env.IMAGE_NAME }}:${{ env.DEFAULT_TAG }} ${{ env.IMAGE_NAME }}:$tag
           done
 
-          # Apply the labels to the manifest (separated by newlines)
-          while IFS= read -r label; do
-            echo "Applying label $label to manifest"
-            podman manifest annotate --index --annotation "$label" $MANIFEST
-          done <<< "$LABELS"
+      # SBOM (OPTIONAL): Software Bill of Materials generation using Syft
+      # Creates a detailed inventory of all software components in the image for supply chain security.
+      # To enable:
+      #   1. Uncomment the "Setup Syft" step below
+      #   2. Uncomment the "Generate SBOM" step below
+      #   3. If using image signing, also uncomment the "Add SBOM Attestation" step further down
+      # Documentation: https://github.com/anchore/syft
+      
+      # - name: Setup Syft
+      #   id: setup-syft
+      #   uses: anchore/sbom-action/download-syft@8e94d75ddd33f69f691467e42275782e4bfefe84 # v0.20.9
+      #   with:
+      #     syft-version: v1.20.0
+      #
+      # - name: Generate SBOM
+      #   id: generate-sbom
+      #   env:
+      #     IMAGE: ${{ env.IMAGE_NAME }}
+      #     DEFAULT_TAG: ${{ env.DEFAULT_TAG }}
+      #     SYFT_CMD: ${{ steps.setup-syft.outputs.cmd }}
+      #   run: |
+      #     OUTPUT_PATH="$(mktemp -d)/sbom.json"
+      #     export SYFT_PARALLELISM=$(($(nproc)*2))
+      #     $SYFT_CMD ${IMAGE}:${DEFAULT_TAG} -o spdx-json=${OUTPUT_PATH}
+      #     echo "OUTPUT_PATH=${OUTPUT_PATH}" >> $GITHUB_OUTPUT
 
-      - name: Push Manifest
-        if: ${{ env.skip != 1 }}
-        id: push_manifest
-        env:
-          MANIFEST: ${{ steps.create-manifest.outputs.MANIFEST }}
-          TAGS: ${{ steps.metadata.outputs.tags }}
-        run: |
-          IMAGE_DEST=${{ secrets.IMAGE_REGISTRY }}/${{ env.IMAGE_NAME }}
-          while IFS= read -r tag; do
-            for i in {1..5}; do
-              podman manifest push --all=false --digestfile=/tmp/digestfile $MANIFEST ${IMAGE_DEST}:$tag && break || sleep $((10*i))
-            done
-            [ -f /tmp/digestfile ] || exit 1
-          done <<< "$TAGS"
-
-          DIGEST=$(cat /tmp/digestfile)
-          echo "digest=$DIGEST" >> $GITHUB_OUTPUT
-          echo "image=${IMAGE_DEST}" >> $GITHUB_OUTPUT
-
-          echo "Pushed manifest to ${IMAGE_DEST} with digest $DIGEST"
-          podman manifest inspect ${IMAGE_DEST}
-
-      - name: Sign Manifest
-        if: ${{ env.skip != 1 }}
-        uses: ./.github/actions/sign
+      # These `if` statements are so that pull requests for your custom images do not make it publish any packages under your name without you knowing
+      # They also check if the runner is on the default branch so that things like the merge queue (if you enable it), are going to work
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@5e57cd118135c172c3672efd75eb46360885c0ef # v3
+        if: github.event_name != 'pull_request' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
         with:
-          image-ref: ${{ steps.push_manifest.outputs.image }}@${{ steps.push_manifest.outputs.digest }}
-          KMS_KEY_ALIAS: ${{ env.KMS_KEY_ALIAS }}
-          AWS_ROLE_ARN: ${{ env.AWS_ROLE_ARN }}
-          AWS_REGION: ${{ env.AWS_REGION }}
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Format output for notification
-        if: ${{ env.skip != 1 }}
-        id: format
+      - name: Push To GHCR
+        uses: redhat-actions/push-to-registry@5ed88d269cf581ea9ef6dd6806d01562096bee9c # v2
+        if: github.event_name != 'pull_request' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+        id: push
         env:
-          DIGESTS_JSON: ${{ steps.load-outputs.outputs.DIGESTS_JSON }}
-          TAGS: ${{ steps.metadata.outputs.tags }}
-        run: |
-          echo "arches=$(echo "$DIGESTS_JSON" | jq -r '[keys[] | "linux/" + .] | sort | join(", ")')" >> $GITHUB_OUTPUT
-          # Add two spaces before each tag (starting from the second line) so that it is formatted correctly in the notification
-          {
-            echo 'tags<<EOF'
-            printf "$TAGS" | awk 'NR==1{print; next} {print "  " $0}'
-            echo EOF
-          } >> $GITHUB_OUTPUT
-
-      - name: Notify AlmaLinux Chat
-        if: ${{ env.skip != 1 }}
-        uses: mattermost/action-mattermost-notify@master
+          REGISTRY_USER: ${{ github.actor }}
+          REGISTRY_PASSWORD: ${{ github.token }}
         with:
-          MATTERMOST_WEBHOOK_URL: ${{ secrets.MM_WEBHOOK_URL }}
-          MATTERMOST_CHANNEL: ${{ env.CHAT_CHANNEL }}
-          MATTERMOST_USERNAME: 'github'
-          TEXT: |-
-            **AlmaLinux OS ${{ steps.check.outputs.version-id }}** Bootc Image, build `${{ steps.check.outputs.long-version }}`, built by [GitHub Actions](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})
+          registry: ${{ env.IMAGE_REGISTRY }}
+          image: ${{ env.IMAGE_NAME }}
+          tags: ${{ steps.metadata.outputs.tags }}
+          username: ${{ env.REGISTRY_USER }}
+          password: ${{ env.REGISTRY_PASSWORD }}
 
-            :almalinux: **${{ steps.push_manifest.outputs.image }}**
-            - Platforms:
-              ```
-              ${{ steps.format.outputs.arches }}
-              ```
-            - Tags:
-              ```
-              ${{ steps.format.outputs.tags }}
-              ```
+      # OPTIONAL: Image Signing with Cosign
+      # Signing is disabled by default. To enable, see README.md "Optional: Enable Image Signing" section.
+
+      # - name: Install Cosign
+      #   uses: sigstore/cosign-installer@d7543c93d881b35a8faa02e8e3605f69b7a1ce62 # v3.10.0
+      #   if: github.event_name != 'pull_request' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+      #
+      # - name: Sign container image
+      #   if: github.event_name != 'pull_request' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+      #   run: |
+      #     IMAGE_FULL="${{ env.IMAGE_REGISTRY }}/${{ env.IMAGE_NAME }}"
+      #     for tag in ${{ steps.metadata.outputs.tags }}; do
+      #       cosign sign -y --key env://COSIGN_PRIVATE_KEY $IMAGE_FULL:$tag
+      #     done
+      #   env:
+      #     TAGS: ${{ steps.push.outputs.digest }}
+      #     COSIGN_EXPERIMENTAL: false
+      #     COSIGN_PRIVATE_KEY: ${{ secrets.SIGNING_SECRET }}
+
+      # OPTIONAL: SBOM Attestation
+      # Attaches SBOM (Software Bill of Materials) to your signed image for supply chain security.
+      # Requires image signing to be enabled first (see above).
+      # To enable:
+      #   1. First enable image signing (see above section)
+      #   2. Uncomment the "Add SBOM Attestation" step below
+      # Documentation: https://slsa.dev/spec/v1.0/requirements#provenance-available
+
+      # - name: Add SBOM Attestation
+      #   if: github.event_name != 'pull_request' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+      #   env:
+      #     IMAGE: ${{ env.IMAGE_REGISTRY }}/${{ env.IMAGE_NAME }}
+      #     DIGEST: ${{ steps.push.outputs.digest }}
+      #     COSIGN_PRIVATE_KEY: ${{ secrets.SIGNING_SECRET }}
+      #     SBOM_OUTPUT: ${{ steps.generate-sbom.outputs.OUTPUT_PATH }}
+      #   run: |
+      #     cd "$(dirname "$SBOM_OUTPUT")"
+      #     cosign attest -y \
+      #       --predicate "$(basename "$SBOM_OUTPUT")" \
+      #       --type spdxjson \
+      #       --key env://COSIGN_PRIVATE_KEY \
+      #       "${IMAGE}@${DIGEST}"

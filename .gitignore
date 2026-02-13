@@ -1,0 +1,6 @@
+*.raw
+*.img
+*.iso
+*.qcow2
+output
+iso
