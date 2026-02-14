@@ -16,4 +16,6 @@ dnf install -y \
 
 dnf -y --setopt=install_weak_deps=False install gcc
 
-flatpak remote-add --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo
+dnf -y copr enable ublue-os/packages
+dnf install -y --enablerepo copr:copr.fedorainfracloud.org:ublue-os:packages \
+    uupd

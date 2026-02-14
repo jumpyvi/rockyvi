@@ -1,6 +1,7 @@
 FROM scratch as ctx
 COPY build /build
-COPY --from=ghcr.io/projectbluefin/common:latest /system_files /files
+COPY --from=ghcr.io/projectbluefin/common:latest /system_files/shared /files
+COPY --from=ghcr.io/projectbluefin/common:latest /system_files/bluefin /files
 COPY --from=ghcr.io/ublue-os/brew:latest /system_files /files
 
 FROM quay.io/rockylinux/rockylinux:10-ubi-init  as repos
